@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>זיהוי אובייקטים בזמן אמת עם קול</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <style>
+        :root {
+            --primary-color: #00ffff;
+            --secondary-color: #ff00ff;
+            --background-color: #000033;
+            --text-color: #ffffff;
+            --sidebar-width: 300px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            overflow-x: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        #video-container {
+            flex-grow: 1;
+            position: relative;
+            overflow: hidden;
+            border: 2px solid var(--primary-color);
+            box-shadow: 0 0 20px var(--primary-color);
+        }
+
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #sidebar {
+            width: var(--sidebar-width);
+            background: linear-gradient(135deg, #000066, #330033);
+            color: var(--text-color);
+            padding: 20px;
+            overflow-y: auto;
+            transition: transform 0.3s ease-in-out;
+            border-right: 2px solid var(--secondary-color);
+            box-shadow: 0 0 20px var(--secondary-color);
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            text-align: center;
+            text-shadow: 0 0 10px var(--primary-color);
+        }
+
+        button {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            background-color: transparent;
+            color: var(--text-color);
+            border: 2px solid var(--primary-color);
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-shadow: 0 0 5px var(--primary-color);
+            box-shadow: 0 0 10px var(--primary-color);
+        }
+
+        button:hover {
+            background-color: var(--primary-color);
+            color: var(--background-color);
+            transform: scale(1.05);
+        }
+
+        button:active {
+            transform: scale(0.95);
+        }
+
+        #stats, #object-list {
+            margin-top: 20px;
+        }
+
+        #object-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .object-item {
+            background-color: rgba(0, 255, 255, 0.1);
+            padding: 5px 10px;
+            margin-bottom: 5px;
+            border-radius: 3px;
+            border: 1px solid var(--primary-color);
+            text-shadow: 0 0 5px var(--primary-color);
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+
+            #sidebar {
+                width: 100%;
+                height: auto;
+                max-height: 50vh;
+                border-right: none;
+                border-top: 2px solid var(--secondary-color);
+            }
+
+            #video-container {
+                height: 50vh;
+            }
+        }
+
+        @keyframes neon-pulse {
+            0% { box-shadow: 0 0 5px var(--primary-color), 0 0 10px var(--primary-color), 0 0 15px var(--primary-color); }
+            50% { box-shadow: 0 0 10px var(--primary-color), 0 0 20px var(--primary-color), 0 0 30px var(--primary-color); }
+            100% { box-shadow: 0 0 5px var(--primary-color), 0 0 10px var(--primary-color), 0 0 15px var(--primary-color); }
+        }
+
+        .neon-pulse {
+            animation: neon-pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="video-container">
+            <video id="video" autoplay muted></video>
+            <canvas id="canvas"></canvas>
+        </div>
+        <div id="sidebar">
+            <h1>זיהוי אובייקטים בזמן אמת עם קול</h1>
+            <button id="toggleDetection">עצור זיהוי</button>
+            <button id="toggleCamera">כבה מצלמה</button>
+            <button id="toggleVoice">השתק קול</button>
+            <div id="stats">
+                <p>סוגי אובייקטים ייחודיים: <span id="uniqueObjects">0</span></p>
+            </div>
+            <div id="object-list"></div>
+        </div>
+    </div>
+
+    <script>
+        // משתנים גלובליים
+        let model, video, canvas, ctx, detectionInterval;
+        const detectedObjects = new Set();
+        const objectList = document.getElementById('object-list');
+        const uniqueObjectsCount = document.getElementById('uniqueObjects');
+        let isDetecting = true;
+        let isCameraOn = true;
+        let isVoiceOn = true;
+
+        // אוצר מילים בעברית לחפצי בית ומשפטים
+        const hebrewVocabulary = [
+            "שולחן", "כיסא", "ספה", "מיטה", "ארון", "מנורה", "טלוויזיה", "מחשב", "מקרר", "תנור",
+            "כיור", "מראה", "שטיח", "וילון", "תמונה", "שעון", "ספר", "עציץ", "מזגן", "רדיו",
+            "מיקרוגל", "קומקום", "טוסטר", "מסך", "מקלדת", "עכבר", "רמקול", "אוזניות", "טלפון", "מטען",
+            "מגבת", "סבון", "מברשת שיניים", "מסרק", "מספריים", "עט", "עיפרון", "נייר", "מחברת", "תיק",
+            "נעליים", "גרביים", "חולצה", "מכנסיים", "ז'קט", "כובע", "צעיף", "כפפות", "משקפיים", "שעון יד"
+        ];
+
+        const desiredObjects = [
+            "אני רוצה לראות טלוויזיה",
+            "איפה השלט?",
+            "הייתי שמח לראות כוס",
+            "תראה לי מחשב נייד",
+            "אולי יש פה ספר מעניין?",
+            "אני מחפש שולחן",
+            "יש לך מנורה יפה?",
+            "אפשר לראות את המקרר?",
+            "איפה המזגן?",
+            "תראה לי בבקשה כיסא נוח"
+        ];
+
+        const compliments = [
+            "ילד חתיך ומושלם",
+            "ילדה יפהפייה"
+        ];
+
+        // אתחול האפליקציה
+        async function init() {
+            try {
+                // טעינת מודל COCO-SSD
+                model = await cocoSsd.load();
+
+                // הגדרת וידאו וקנבס
+                video = document.getElementById('video');
+                canvas = document.getElementById('canvas');
+                ctx = canvas.getContext('2d');
+
+                // גישה למצלמה
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { ideal: 'environment' } }
+                });
+                video.srcObject = stream;
+
+                // המתנה עד שהווידאו מוכן
+                await new Promise(resolve => video.onloadedmetadata = resolve);
+
+                // הגדרת מימדי הקנבס
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+
+                // התחלת זיהוי
+                detectionInterval = setInterval(detectObjects, 500); // ~2 FPS
+
+                // הגדרת מאזיני אירועים
+                document.getElementById('toggleDetection').addEventListener('click', toggleDetection);
+                document.getElementById('toggleCamera').addEventListener('click', toggleCamera);
+                document.getElementById('toggleVoice').addEventListener('click', toggleVoice);
+
+                // התחלת רצונות אקראיים ומחמאות
+                setInterval(speakRandomDesire, 30000); // כל 30 שניות
+                setInterval(speakRandomCompliment, 60000); // כל 60 שניות
+            } catch (error) {
+                console.error('שגיאה באתחול האפליקציה:', error);
+                alert('שגיאה באתחול האפליקציה. אנא נסה שוב מאוחר יותר.');
+            }
+        }
+
+        // זיהוי אובייקטים בפיד הווידאו
+        async function detectObjects() {
+            if (!isDetecting) return;
+
+            const predictions = await model.detect(video);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            predictions.forEach(prediction => {
+                // ציור מסגרת
+                ctx.strokeStyle = '#00FFFF';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(...prediction.bbox);
+
+                // ציור תווית
+                ctx.fillStyle = '#00FFFF';
+                ctx.font = '18px Arial';
+                ctx.fillText(prediction.class, prediction.bbox[0], prediction.bbox[1] > 10 ? prediction.bbox[1] - 5 : 10);
+
+                // הוספה לאובייקטים שזוהו אם חדש
+                if (!detectedObjects.has(prediction.class)) {
+                    detectedObjects.add(prediction.class);
+                    addObjectToList(prediction.class);
+                    updateUniqueObjectsCount();
+                    if (isVoiceOn) speakText(`אני רואה ${prediction.class}`);
+                }
+            });
+        }
+
+        // הוספת אובייקט לרשימה בסרגל הצד
+        function addObjectToList(object) {
+            const listItem = document.createElement('div');
+            listItem.className = 'object-item';
+            listItem.textContent = `${object} - ${new Date().toLocaleTimeString()}`;
+            objectList.prepend(listItem);
+        }
+
+        // עדכון מספר האובייקטים הייחודיים שזוהו
+        function updateUniqueObjectsCount() {
+            uniqueObjectsCount.textContent = detectedObjects.size;
+        }
+
+        // הפעלה/עצירה של זיהוי אובייקטים
+        function toggleDetection() {
+            isDetecting = !isDetecting;
+            const button = document.getElementById('toggleDetection');
+            button.textContent = isDetecting ? 'עצור זיהוי' : 'התחל זיהוי';
+            button.classList.toggle('neon-pulse', isDetecting);
+        }
+
+        // הפעלה/כיבוי של המצלמה
+        function toggleCamera() {
+            isCameraOn = !isCameraOn;
+            const button = document.getElementById('toggleCamera');
+            button.textContent = isCameraOn ? 'כבה מצלמה' : 'הפעל מצלמה';
+            video.style.display = isCameraOn ? 'block' : 'none';
+        }
+
+        // הפעלה/השתקה של הקול
+        function toggleVoice() {
+            isVoiceOn = !isVoiceOn;
+            const button = document.getElementById('toggleVoice');
+            button.textContent = isVoiceOn ? 'השתק קול' : 'הפעל קול';
+        }
+
+        // הקראת טקסט באמצעות Web Speech API
+        function speakText(text) {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'he-IL';
+            speechSynthesis.speak(utterance);
+        }
+
+        // הקראת רצון אקראי
+        function speakRandomDesire() {
+            if (isVoiceOn) {
+                const randomDesire = desiredObjects[Math.floor(Math.random() * desiredObjects.length)];
+                speakText(randomDesire);
+            }
+        }
+
+        // הקראת מחמאה אקראית
+        function speakRandomCompliment() {
+            if (isVoiceOn) {
+                const randomCompliment = compliments[Math.floor(Math.random() * compliments.length)];
+                speakText(randomCompliment);
+            }
+        }
+
+        // אתחול האפליקציה כאשר העמוד נטען
+        window.onload = init;
+    </script>
+</body>
+</html>
